@@ -1,12 +1,13 @@
 import os
 import pymysql
-import random
-from fastapi import FastAPI, HTTPException
+import hashlib
+from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from contextlib import asynccontextmanager
 
 # ========================================================
-# 1. KONFIGURASI DATABASE & ENVIRONMENTS
+# 1. DATABASE CONFIGURATION (SINKRON KE AIVEN/RAILWAY ENV)
 # ========================================================
 DB_CONFIG = {
     "host": os.getenv("MYSQLHOST", "localhost"),
@@ -18,58 +19,55 @@ DB_CONFIG = {
 }
 
 def get_db_connection():
-    """Membuka koneksi ke MySQL"""
     return pymysql.connect(**DB_CONFIG)
 
 # ========================================================
-# 2. LOGIKA OTOMATISASI BUAT TABEL (INITIALIZATION)
+# 2. SEED DATABASE & GERBANG AWAL HARGA Rp100
 # ========================================================
 def init_db():
-    """Membuat tabel secara otomatis jika belum ada di database"""
     connection = get_db_connection()
     try:
         with connection.cursor() as cursor:
-            # Buat Tabel Riwayat Harga
+            # Tabel Histori Pergerakan Harga Efek/Aset
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS riwayat_harga (
                     id INT AUTO_INCREMENT PRIMARY KEY,
-                    harga INT NOT NULL,
+                    harga DOUBLE NOT NULL,
                     waktu TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             """)
             
-            # Buat Tabel Portofolio User
+            # Tabel Portofolio & Akun Keamanan Investor
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS portofolio (
                     username VARCHAR(50) PRIMARY KEY,
-                    saldo_tunai DOUBLE NOT NULL DEFAULT 1000000,
+                    password_hash VARCHAR(255) NOT NULL,
+                    saldo_tunai DOUBLE NOT NULL DEFAULT 0,
                     saldo_unit DOUBLE NOT NULL DEFAULT 0,
                     total_dividen DOUBLE NOT NULL DEFAULT 0
                 );
             """)
             
-            # Cek jika tabel riwayat_harga masih kosong, isi dengan harga awal awal (misal: Rp10.000)
+            # Mengunci Harga Awal Sistem Tepat di Rp100 jika database kosong
             cursor.execute("SELECT COUNT(*) as total FROM riwayat_harga")
-            result = cursor.fetchone()
-            if result["total"] == 0:
-                cursor.execute("INSERT INTO riwayat_harga (harga) VALUES (10000)")
+            if cursor.fetchone()["total"] == 0:
+                cursor.execute("INSERT INTO riwayat_harga (harga) VALUES (100.0)")
                 
             connection.commit()
-            print("=== DATABASE & TABEL BERHASIL DI-INITIALISASI ===")
+            print("=== SISTEM INVESTASI REAL AUTOMATIC VOLUMETRIK ONLINE ===")
     except Exception as e:
-        print(f"❌ Gagal menginisialisasi database: {e}")
+        print(f"❌ Gagal Inisialisasi Database: {e}")
     finally:
         connection.close()
 
-# Menggunakan Lifespan untuk menjalankan init_db saat FastAPI start
 @asynccontextmanager
-async def George(app: FastAPI):
+async def lifespan(app: FastAPI):
     init_db()
     yield
 
-app = FastAPI(lifespan=George)
+app = FastAPI(lifespan=lifespan)
 
-# Izinkan CORS agar index.html bisa menembak API dari mana saja
+# Pengaman CORS agar file index.html dari lokal/hosting lain bisa mengakses API ini
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -79,14 +77,103 @@ app.add_middleware(
 )
 
 # ========================================================
-# 3. ENDPOINTS API MANAGEMENT
+# 3. PYDANTIC MODEL SCHEMAS (VALIDASI STRUKTUR REQ JSON)
+# ========================================================
+class AuthModel(BaseModel):
+    username: str
+    password: str
+
+class OrderModel(BaseModel):
+    username: str
+    jumlah_unit: float
+
+class AdminKelolaSaldoModel(BaseModel):
+    username: str
+    nominal: float
+    aksi: str  # Nilai wajib: "deposit" atau "withdrawal"
+    admin_secret_key: str
+
+# Kunci Token Pengaman Eksekusi API Admin kamu
+ADMIN_SECRET_TOKEN = "LibertyAdminSuperSecret2026"
+
+# Helper Enkripsi Rahasia Password User
+def hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode()).hexdigest()
+
+# ========================================================
+# 4. ALGORITMA MEKANISME HARGA BERBASIS VOLUMETRIK
+# ========================================================
+def hitung_perubahan_harga(cursor, jumlah_unit, aksi):
+    """
+    Sistem murni otomatis: Harga bergerak real-time berdasarkan volume transaksi.
+    Setiap 1 unit transaksi menggeser nilai aset sebesar Rp0.5 (Dapat diubah sesuai preferensi).
+    """
+    cursor.execute("SELECT harga FROM riwayat_harga ORDER BY id DESC LIMIT 1")
+    harga_sekarang = cursor.fetchone()["harga"]
+    
+    SENSITIVITAS = 0.5 
+    
+    if aksi == "beli":
+        # Permintaan Naik = Harga Terdongkrak Naik
+        harga_baru = harga_sekarang + (jumlah_unit * SENSITIVITAS)
+    elif aksi == "jual":
+        # Aset Banjir di Pasar = Harga Tertekan Turun
+        harga_baru = harga_sekarang - (jumlah_unit * SENSITIVITAS)
+        
+    # Batas bawah psikologis sistem agar harga tidak menyentuh Rp0 atau minus
+    if harga_baru < 1.0:
+        harga_baru = 1.0
+        
+    cursor.execute("INSERT INTO riwayat_harga (harga) VALUES (%s)", (harga_baru,))
+
+# ========================================================
+# 5. PUBLIC INVESTOR ENDPOINTS
 # ========================================================
 
 @app.get("/")
 def root():
-    return {"status": "Backend Aktif", "database": "Terhubung ke Aiven MySQL"}
+    return {"status": "Platform Active", "system": "Liberty Volumetric Trading Engine"}
 
-# --- ENDPOINT: AMBIL DATA HARGA DAN HISTORI (MAX 50) ---
+# --- PENDAFTARAN AKUN INVESTOR BARU ---
+@app.post("/register")
+def register_investor(user_data: AuthModel):
+    username = user_data.username.strip()
+    if not username or len(user_data.password) < 6:
+        raise HTTPException(status_code=400, detail="Username valid & Password minimal 6 karakter!")
+        
+    connection = get_db_connection()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT username FROM portofolio WHERE username = %s", (username,))
+            if cursor.fetchone():
+                raise HTTPException(status_code=400, detail="Username sudah terdaftar di sistem!")
+            
+            p_hash = hash_password(user_data.password)
+            # Saldo awal 0 rupiah (Investor wajib deposit dana riil terlebih dahulu via Admin)
+            cursor.execute(
+                "INSERT INTO portofolio (username, password_hash, saldo_tunai) VALUES (%s, %s, 0)",
+                (username, p_hash)
+            )
+            connection.commit()
+            return {"status": "success", "message": f"Investor {username} berhasil didaftarkan."}
+    finally:
+        connection.close()
+
+# --- VERIFIKASI LOGIN INVESTOR ---
+@app.post("/login")
+def login_investor(user_data: AuthModel):
+    connection = get_db_connection()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT password_hash FROM portofolio WHERE username = %s", (user_data.username,))
+            user = cursor.fetchone()
+            if not user or user["password_hash"] != hash_password(user_data.password):
+                raise HTTPException(status_code=401, detail="Username atau Password salah!")
+            return {"status": "success", "username": user_data.username}
+    finally:
+        connection.close()
+
+# --- FETCH DATA HARGA & HISTORI GRAPH ---
 @app.get("/harga")
 def get_harga():
     connection = get_db_connection()
@@ -94,9 +181,8 @@ def get_harga():
         with connection.cursor() as cursor:
             cursor.execute("SELECT harga, waktu FROM riwayat_harga ORDER BY id DESC LIMIT 1")
             latest = cursor.fetchone()
-            
             if not latest:
-                return {"harga_saat_ini": 10000, "last_update": "N/A", "riwayat_harga": []}
+                return {"harga_saat_ini": 100, "last_update": "N/A", "riwayat_harga": []}
 
             cursor.execute("SELECT harga, waktu FROM riwayat_harga ORDER BY id DESC LIMIT 50")
             chart_data = cursor.fetchall()
@@ -110,32 +196,23 @@ def get_harga():
                 "last_update": latest["waktu"].strftime("%H:%M:%S"),
                 "riwayat_harga": chart_data
             }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
     finally:
         connection.close()
 
-# --- ENDPOINT: GET OR CREATE PORTOFOLIO USER ---
+# --- FETCH NERACA SALDO & PORTOFOLIO USER ---
 @app.get("/portofolio/{username}")
 def get_portofolio(username: str):
     connection = get_db_connection()
     try:
         with connection.cursor() as cursor:
-            cursor.execute("SELECT * FROM portofolio WHERE username = %s", (username,))
+            cursor.execute("SELECT username, saldo_tunai, saldo_unit, total_dividen FROM portofolio WHERE username = %s", (username,))
             user = cursor.fetchone()
-            
             if not user:
-                cursor.execute(
-                    "INSERT INTO portofolio (username, saldo_tunai, saldo_unit) VALUES (%s, 1000000, 0)",
-                    (username,)
-                )
-                connection.commit()
-                cursor.execute("SELECT * FROM portofolio WHERE username = %s", (username,))
-                user = cursor.fetchone()
+                raise HTTPException(status_code=404, detail="Akun Investor tidak ditemukan")
 
             cursor.execute("SELECT harga FROM riwayat_harga ORDER BY id DESC LIMIT 1")
-            harga_latest = cursor.fetchone()
-            harga_sekarang = harga_latest["harga"] if harga_latest else 10000
+            latest_harga = cursor.fetchone()
+            harga_sekarang = latest_harga["harga"] if latest_harga else 100
 
             nilai_unit = user["saldo_unit"] * harga_sekarang
             total_kekayaan = user["saldo_tunai"] + nilai_unit
@@ -148,131 +225,140 @@ def get_portofolio(username: str):
                 "nilai_unit": nilai_unit,
                 "total_kekayaan": total_kekayaan
             }
+    finally:
+        connection.close()
+
+# --- EKSEKUSI PEMBELIAN (DANA BERKURANG -> HARGA NAIK) ---
+@app.post("/beli")
+def beli_aset(order: OrderModel):
+    if order.jumlah_unit <= 0:
+        raise HTTPException(status_code=400, detail="Volume unit order tidak valid!")
+
+    connection = get_db_connection()
+    try:
+        connection.begin() # Kunci database untuk transaksi ACID
+        with connection.cursor() as cursor:
+            # Mengunci baris user agar tidak terjadi Race Condition manipulasi saldo ganda
+            cursor.execute("SELECT saldo_tunai, saldo_unit FROM portofolio WHERE username = %s FOR UPDATE", (order.username,))
+            user = cursor.fetchone()
+            if not user:
+                raise HTTPException(status_code=404, detail="User tidak ditemukan")
+
+            cursor.execute("SELECT harga FROM riwayat_harga ORDER BY id DESC LIMIT 1")
+            harga_sekarang = cursor.fetchone()["harga"]
+
+            total_tagihan = order.jumlah_unit * harga_sekarang
+
+            if user["saldo_tunai"] < total_tagihan:
+                raise HTTPException(status_code=400, detail="Gagal Beli: Dana kas tunai Anda tidak mencukupi")
+
+            # 1. Update Akun Saldo Kas Tunai dan Volume Unit Investor
+            cursor.execute(
+                "UPDATE portofolio SET saldo_tunai = saldo_tunai - %s, saldo_unit = saldo_unit + %s WHERE username = %s",
+                (total_tagihan, order.jumlah_unit, order.username)
+            )
+            
+            # 2. Jalankan Pergeseran Algoritma Harga Sistem (UP)
+            hitung_perubahan_harga(cursor, order.jumlah_unit, "beli")
+            
+            connection.commit()
+            return {"status": "success", "message": "Eksekusi Order Pembelian Berhasil"}
     except Exception as e:
+        connection.rollback()
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         connection.close()
 
-# --- ENDPOINT: REGISTER AKUN (EKSPLISIT) ---
-@app.post("/register")
-def register_user(payload: dict):
-    username = payload.get("username", "").strip()
-    if not username:
-        raise HTTPException(status_code=400, detail="Username tidak boleh kosong")
-        
-    connection = get_db_connection()
-    try:
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT username FROM portofolio WHERE username = %s", (username,))
-            if cursor.fetchone():
-                raise HTTPException(status_code=400, detail="Username sudah terdaftar")
-            
-            cursor.execute(
-                "INSERT INTO portofolio (username, saldo_tunai, saldo_unit) VALUES (%s, 1000000, 0)",
-                (username,)
-            )
-            connection.commit()
-            return {"message": f"Akun {username} sukses dibuat dengan modal Rp1.000.000"}
-    finally:
-        connection.close()
-
-# --- ENDPOINT: EKSEKUSI BELI (POTONG FEE 1%) ---
-@app.post("/beli")
-def beli_aset(payload: dict):
-    username = payload.get("username")
-    jumlah_unit = float(payload.get("jumlah_unit", 0))
-
-    if jumlah_unit <= 0:
-        raise HTTPException(status_code=400, detail="Jumlah unit harus lebih dari 0")
-
-    connection = get_db_connection()
-    try:
-        with connection.cursor() as cursor:
-            cursor.execute("SELECT * FROM portofolio WHERE username = %s", (username,))
-            user = cursor.fetchone()
-            if not user:
-                raise HTTPException(status_code=404, detail="User tidak ditemukan")
-
-            cursor.execute("SELECT harga FROM riwayat_harga ORDER BY id DESC LIMIT 1")
-            latest_harga = cursor.fetchone()
-            harga_sekarang = latest_harga["harga"] if latest_harga else 10000
-
-            biaya_pokok = jumlah_unit * harga_sekarang
-            fee = biaya_pokok * 0.01
-            total_tagihan = biaya_pokok + fee
-
-            if user["saldo_tunai"] < total_tagihan:
-                raise HTTPException(status_code=400, detail=f"Saldo tunai tidak cukup. Butuh Rp{total_tagihan:,.0f}")
-
-            saldo_tunai_baru = user["saldo_tunai"] - total_tagihan
-            saldo_unit_baru = user["saldo_unit"] + jumlah_unit
-
-            cursor.execute(
-                "UPDATE portofolio SET saldo_tunai = %s, saldo_unit = %s WHERE username = %s",
-                (saldo_tunai_baru, saldo_unit_baru, username)
-            )
-            connection.commit()
-            return {"message": "Pembelian berhasil"}
-    finally:
-        connection.close()
-
-# --- ENDPOINT: EKSEKUSI JUAL (POTONG FEE 1%) ---
+# --- EKSEKUSI PENJUALAN (DANA BERTAMBAH -> HARGA TURUN) ---
 @app.post("/jual")
-def jual_aset(payload: dict):
-    username = payload.get("username")
-    jumlah_unit = float(payload.get("jumlah_unit", 0))
-
-    if jumlah_unit <= 0:
-        raise HTTPException(status_code=400, detail="Jumlah unit harus lebih dari 0")
+def jual_aset(order: OrderModel):
+    if order.jumlah_unit <= 0:
+        raise HTTPException(status_code=400, detail="Volume unit order tidak valid!")
 
     connection = get_db_connection()
     try:
+        connection.begin()
         with connection.cursor() as cursor:
-            cursor.execute("SELECT * FROM portofolio WHERE username = %s", (username,))
+            cursor.execute("SELECT saldo_tunai, saldo_unit FROM portofolio WHERE username = %s FOR UPDATE", (order.username,))
             user = cursor.fetchone()
             if not user:
                 raise HTTPException(status_code=404, detail="User tidak ditemukan")
 
-            if user["saldo_unit"] < jumlah_unit:
-                raise HTTPException(status_code=400, detail="Jumlah unit yang kamu miliki tidak mencukupi")
+            if user["saldo_unit"] < order.jumlah_unit:
+                raise HTTPException(status_code=400, detail="Gagal Jual: Kepemilikan Unit Aset tidak mencukupi")
 
             cursor.execute("SELECT harga FROM riwayat_harga ORDER BY id DESC LIMIT 1")
-            latest_harga = cursor.fetchone()
-            harga_sekarang = latest_harga["harga"] if latest_harga else 10000
+            harga_sekarang = cursor.fetchone()["harga"]
 
-            pendapatan_kotor = jumlah_unit * harga_sekarang
-            fee = pendapatan_kotor * 0.01
-            total_diterima = pendapatan_kotor - fee
+            total_dana_diterima = order.jumlah_unit * harga_sekarang
 
-            saldo_tunai_baru = user["saldo_tunai"] + total_diterima
-            saldo_unit_baru = user["saldo_unit"] - jumlah_unit
-
+            # 1. Update Akun Kas Tunai (Bertambah) dan Volume Unit Investor (Berkurang)
             cursor.execute(
-                "UPDATE portofolio SET saldo_tunai = %s, saldo_unit = %s WHERE username = %s",
-                (saldo_tunai_baru, saldo_unit_baru, username)
+                "UPDATE portofolio SET saldo_tunai = saldo_tunai + %s, saldo_unit = saldo_unit - %s WHERE username = %s",
+                (total_dana_diterima, order.jumlah_unit, order.username)
             )
+            
+            # 2. Jalankan Pergeseran Algoritma Harga Sistem (DOWN)
+            hitung_perubahan_harga(cursor, order.jumlah_unit, "jual")
+            
             connection.commit()
-            return {"message": "Penjualan berhasil"}
+            return {"status": "success", "message": "Eksekusi Order Penjualan Berhasil"}
+    except Exception as e:
+        connection.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         connection.close()
 
-# --- TRIGGER CRON/SIMULASI ACAK HARGA BARU ---
-@app.post("/simulasi-acak-harga")
-def simulasi_acak_harga():
+# ========================================================
+# 6. ADMIN PRIVATE CONTROL ENDPOINTS (DEPOSIT & WITHDRAWAL)
+# ========================================================
+@app.post("/admin/kelola-saldo")
+def admin_kelola_saldo(data: AdminKelolaSaldoModel):
+    # Verifikasi Autentikasi Secret Key Admin API
+    if data.admin_secret_key != ADMIN_SECRET_TOKEN:
+        raise HTTPException(status_code=403, detail="Akses Ditolak: Secret Key Admin Tidak Valid!")
+        
+    if data.nominal <= 0:
+        raise HTTPException(status_code=400, detail="Nominal saldo harus lebih besar dari 0!")
+        
+    aksi_tipe = data.aksi.strip().lower()
+    if aksi_tipe not in ["deposit", "withdrawal"]:
+        raise HTTPException(status_code=400, detail="Aksi gagal: Gunakan 'deposit' atau 'withdrawal'")
+
     connection = get_db_connection()
     try:
+        connection.begin()
         with connection.cursor() as cursor:
-            cursor.execute("SELECT harga FROM riwayat_harga ORDER BY id DESC LIMIT 1")
-            latest = cursor.fetchone()
-            harga_sekarang = latest["harga"] if latest else 10000
-            
-            perubahan = random.randint(-500, 500)
-            harga_baru = harga_sekarang + perubahan
-            if harga_baru < 1000:
-                harga_baru = 1000
+            cursor.execute("SELECT username, saldo_tunai FROM portofolio WHERE username = %s FOR UPDATE", (data.username,))
+            user = cursor.fetchone()
+            if not user:
+                raise HTTPException(status_code=404, detail="Nama user tidak terdaftar dalam database!")
+
+            if aksi_tipe == "deposit":
+                cursor.execute(
+                    "UPDATE portofolio SET saldo_tunai = saldo_tunai + %s WHERE username = %s",
+                    (data.nominal, data.username)
+                )
+                msg = f"Sukses sanksi DEPOSIT Rp{data.nominal:,} ke user {data.username}"
                 
-            cursor.execute("INSERT INTO riwayat_harga (harga) VALUES (%s)", (harga_baru,))
+            elif aksi_tipe == "withdrawal":
+                if user["saldo_tunai"] < data.nominal:
+                    raise HTTPException(status_code=400, detail="Gagal WD: Dana kas tunai user tidak mencukupi!")
+                    
+                cursor.execute(
+                    "UPDATE portofolio SET saldo_tunai = saldo_tunai - %s WHERE username = %s",
+                    (data.nominal, data.username)
+                )
+                msg = f"Sukses sanksi WITHDRAWAL Rp{data.nominal:,} dari user {data.username}"
+
             connection.commit()
-            return {"status": "Berhasil memperbarui harga pasar", "harga_baru": harga_baru}
+            return {"status": "success", "message": msg}
+            
+    except HTTPException as he:
+        connection.rollback()
+        raise he
+    except Exception as e:
+        connection.rollback()
+        raise HTTPException(status_code=500, detail=f"Sistem Crash Internal: {str(e)}")
     finally:
         connection.close()
