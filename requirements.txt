@@ -1,4 +1,4 @@
 fastapi
-pydantic
 uvicorn
-
+pymysql
+cryptography
