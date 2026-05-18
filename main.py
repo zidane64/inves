@@ -1,6 +1,7 @@
-# main.py - Sistem Investasi Real-Time untuk Railway (Versi Aman)
+# main.py - Sistem Investasi Real-Time untuk Railway (Versi Aman + CORS)
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from datetime import datetime
 import random
@@ -9,12 +10,10 @@ import json
 import asyncio
 from contextlib import asynccontextmanager
 
-app = FastAPI(title="Sistem Investasi Real-Time")
-
 # File penyimpanan data agar tidak hilang saat Railway restart
 DATA_FILE = "data_investasi.json"
 
-# ============ DATA MODEL ============
+# ============ SISTEM UTAMA (Class ditaruh di atas agar inisialisasi lancar) ============
 class User:
     def __init__(self, username: str, saldo_tunai=1000000.0, saldo_unit=0.0):
         self.username = username
@@ -40,7 +39,6 @@ class Transaksi:
             "fee": self.fee, "waktu": self.waktu.isoformat() if isinstance(self.waktu, datetime) else self.waktu
         }
 
-# ============ SISTEM UTAMA ============
 class SistemInvestasi:
     def __init__(self):
         self.harga_saat_ini = 400.0
@@ -52,10 +50,9 @@ class SistemInvestasi:
         self.dividen_persen = 0.02
         self.last_dividen_date = datetime.now()
         self.last_update = datetime.now()
-        self.load_data() # Load data lama saat aplikasi dinyalakan
+        self.load_data()
     
     def save_data(self):
-        """Menyimpan seluruh state sistem ke file JSON"""
         data = {
             "harga_saat_ini": self.harga_saat_ini,
             "riwayat_harga": self.riwayat_harga,
@@ -69,7 +66,6 @@ class SistemInvestasi:
             json.dump(data, f, indent=4)
 
     def load_data(self):
-        """Membaca data dari file JSON jika ada"""
         if os.path.exists(DATA_FILE):
             try:
                 with open(DATA_FILE, "r") as f:
@@ -89,7 +85,7 @@ class SistemInvestasi:
                     self.last_dividen_date = datetime.now()
                     self.last_update = datetime.now()
             except Exception as e:
-                print(f"Gagal memuat data lama, membuat database baru. Error: {e}")
+                print(f"Gagal memuat data, membuat database baru: {e}")
 
     def update_harga(self):
         perubahan = random.uniform(-0.015, 0.015)
@@ -106,7 +102,7 @@ class SistemInvestasi:
         
         self.last_update = datetime.now()
         self.cek_dividen()
-        self.save_data() # Simpan perubahan harga
+        self.save_data()
         return self.harga_saat_ini
     
     def cek_dividen(self):
@@ -151,23 +147,16 @@ class SistemInvestasi:
             self.save_data()
             
             return {
-                "status": "sukses",
-                "jumlah_unit": jumlah_unit,
-                "harga": self.harga_saat_ini,
-                "total": round(total_biaya, 2),
-                "fee": round(fee, 2),
-                "total_bayar": round(total_dengan_fee, 2),
-                "saldo_tunai": round(user.saldo_tunai, 2),
-                "saldo_unit": user.saldo_unit
+                "status": "sukses", "jumlah_unit": jumlah_unit, "harga": self.harga_saat_ini,
+                "total": round(total_biaya, 2), "fee": round(fee, 2), "total_bayar": round(total_dengan_fee, 2),
+                "saldo_tunai": round(user.saldo_tunai, 2), "saldo_unit": user.saldo_unit
             }
-        else:
-            raise HTTPException(400, "Saldo tidak cukup")
+        raise HTTPException(400, "Saldo tidak cukup")
     
     def jual(self, username: str, jumlah_unit: float):
         user = self.users.get(username)
         if not user:
             raise HTTPException(404, "User tidak ditemukan")
-        
         if user.saldo_unit < jumlah_unit:
             raise HTTPException(400, "Unit tidak cukup")
         
@@ -184,14 +173,9 @@ class SistemInvestasi:
         self.save_data()
         
         return {
-            "status": "sukses",
-            "jumlah_unit": jumlah_unit,
-            "harga": self.harga_saat_ini,
-            "total": round(total_hasil, 2),
-            "fee": round(fee, 2),
-            "total_diterima": round(total_diterima, 2),
-            "saldo_tunai": round(user.saldo_tunai, 2),
-            "saldo_unit": user.saldo_unit
+            "status": "sukses", "jumlah_unit": jumlah_unit, "harga": self.harga_saat_ini,
+            "total": round(total_hasil, 2), "fee": round(fee, 2), "total_diterima": round(total_diterima, 2),
+            "saldo_tunai": round(user.saldo_tunai, 2), "saldo_unit": user.saldo_unit
         }
     
     def get_portofolio(self, username: str):
@@ -201,34 +185,39 @@ class SistemInvestasi:
         
         nilai_unit = user.saldo_unit * self.harga_saat_ini
         total_kekayaan = user.saldo_tunai + nilai_unit
-        
         user_dividen = [d for d in self.dividen_history if d["username"] == username]
         total_dividen = sum(d["dividen"] for d in user_dividen)
         
         return {
-            "username": username,
-            "saldo_tunai": round(user.saldo_tunai, 2),
-            "saldo_unit": user.saldo_unit,
-            "harga_saat_ini": self.harga_saat_ini,
-            "nilai_unit": round(nilai_unit, 2),
-            "total_kekayaan": round(total_kekayaan, 2),
-            "total_dividen": round(total_dividen, 2),
+            "username": username, "saldo_tunai": round(user.saldo_tunai, 2), "saldo_unit": user.saldo_unit,
+            "harga_saat_ini": self.harga_saat_ini, "nilai_unit": round(nilai_unit, 2),
+            "total_kekayaan": round(total_kekayaan, 2), "total_dividen": round(total_dividen, 2),
             "riwayat_dividen": user_dividen
         }
 
-# ============ INISIALISASI ============
+# ============ INISIALISASI & CORS SETUP ============
 sistem = SistemInvestasi()
+app = FastAPI(title="Sistem Investasi Real-Time")
+
+# Konfigurasi CORS agar index.html dari luar bisa nembak ke Railway kamu
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 async def background_updater():
     while True:
-        await asyncio.sleep(4 * 3600)  # Loop otomatis per 4 jam
+        await asyncio.sleep(4 * 3600)
         harga_baru = sistem.update_harga()
         print(f"Harga otomatis terupdate: Rp{harga_baru}")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     asyncio.create_task(background_updater())
-    print("✅ Sistem investasi berjalan dengan auto-save JSON")
+    print("✅ Sistem investasi berjalan dengan auto-save JSON & CORS Aktif")
     yield
 
 app.router.lifespan_context = lifespan
@@ -244,18 +233,9 @@ class RegisterRequest(BaseModel):
 @app.get("/")
 def root():
     return {
-        "message": "Sistem Investasi Real-Time",
-        "status": "running",
-        "harga_saat_ini": sistem.harga_saat_ini,
+        "message": "Sistem Investasi Real-Time", "status": "running", "harga_saat_ini": sistem.harga_saat_ini,
         "last_update": sistem.last_update.isoformat() if isinstance(sistem.last_update, datetime) else sistem.last_update,
-        "endpoints": {
-            "register": "POST /register",
-            "harga": "GET /harga",
-            "beli": "POST /beli",
-            "jual": "POST /jual",
-            "portofolio": "GET /portofolio/{username}",
-            "dashboard": "GET /dashboard"
-        }
+        "endpoints": ["/register", "/harga", "/beli", "/jual", "/portofolio/{username}", "/dashboard"]
     }
 
 @app.post("/register")
@@ -269,7 +249,6 @@ def get_harga():
     return {
         "harga_saat_ini": sistem.harga_saat_ini,
         "last_update": sistem.last_update.isoformat() if isinstance(sistem.last_update, datetime) else sistem.last_update,
-        "next_update_in_hours": 4,
         "riwayat_harga": sistem.riwayat_harga[-30:]
     }
 
@@ -287,162 +266,4 @@ def get_portofolio(username: str):
 
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard():
-    # Menggunakan dashboard HTML bawaan kamu yang sudah keren
-    return """
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Sistem Investasi Real-Time</title>
-        <meta name="viewport" content="width=device-width, initial-scale=1">
-        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-        <style>
-            * { margin: 0; padding: 0; box-sizing: border-box; }
-            body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 20px; }
-            .container { max-width: 1200px; margin: auto; background: white; border-radius: 20px; padding: 30px; box-shadow: 0 20px 60px rgba(0,0,0,0.3); }
-            h1 { color: #333; margin-bottom: 10px; }
-            .subtitle { color: #666; margin-bottom: 30px; border-bottom: 2px solid #667eea; padding-bottom: 10px; }
-            .info-bar { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 20px; border-radius: 15px; margin-bottom: 30px; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; }
-            .info-item { text-align: center; }
-            .info-item .label { font-size: 14px; opacity: 0.9; }
-            .info-item .value { font-size: 28px; font-weight: bold; margin-top: 5px; }
-            .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 20px; margin-bottom: 30px; }
-            .card { background: #f8f9fa; border-radius: 15px; padding: 20px; border: 1px solid #e0e0e0; }
-            .card h3 { margin-bottom: 15px; color: #333; }
-            input, button { width: 100%; padding: 12px; margin: 8px 0; border-radius: 8px; border: 1px solid #ddd; font-size: 14px; }
-            button { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; cursor: pointer; font-weight: bold; transition: transform 0.2s; }
-            button:hover { transform: translateY(-2px); }
-            .result { background: white; border-radius: 8px; padding: 10px; margin-top: 10px; font-size: 12px; overflow-x: auto; }
-            canvas { max-height: 300px; margin-top: 20px; }
-            .profit { color: #10b981; font-weight: bold; }
-            @media (max-width: 768px) { .container { padding: 15px; } .grid { grid-template-columns: 1fr; } }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <h1>📈 Sistem Investasi Real-Time</h1>
-            <div class="subtitle">Pergerakan harga setiap 4 jam | Fee 0.1% | Dividen 2% per bulan</div>
-            
-            <div class="info-bar" id="infoBar">
-                <div class="info-item"><div class="label">💰 Harga Saat Ini</div><div class="value" id="hargaValue">Rp --</div></div>
-                <div class="info-item"><div class="label">⏰ Last Update</div><div class="value" id="lastUpdate">--</div></div>
-                <div class="info-item"><div class="label">🔄 Next Update</div><div class="value" id="nextUpdate">4 jam</div></div>
-            </div>
-            
-            <div class="grid">
-                <div class="card">
-                    <h3>👤 Registrasi</h3>
-                    <input type="text" id="regUser" placeholder="Username">
-                    <button onclick="register()">Daftar Akun</button>
-                    <div id="regResult" class="result"></div>
-                </div>
-                
-                <div class="card">
-                    <h3>🛒 Beli Unit</h3>
-                    <input type="text" id="buyUser" placeholder="Username">
-                    <input type="number" id="buyJumlah" placeholder="Jumlah unit" step="0.1">
-                    <button onclick="beli()">Beli</button>
-                    <div id="buyResult" class="result"></div>
-                </div>
-                
-                <div class="card">
-                    <h3>💰 Jual Unit</h3>
-                    <input type="text" id="sellUser" placeholder="Username">
-                    <input type="number" id="sellJumlah" placeholder="Jumlah unit" step="0.1">
-                    <button onclick="jual()">Jual</button>
-                    <div id="sellResult" class="result"></div>
-                </div>
-                
-                <div class="card">
-                    <h3>📊 Portofolio</h3>
-                    <input type="text" id="portUser" placeholder="Username">
-                    <button onclick="lihatPortofolio()">Lihat Portofolio</button>
-                    <div id="portResult" class="result"></div>
-                </div>
-            </div>
-            
-            <div class="card">
-                <h3>📈 Grafik Pergerakan Harga (30 terakhir)</h3>
-                <canvas id="hargaChart"></canvas>
-                <p style="margin-top: 10px; font-size: 12px; color: #666;">*Harga otomatis tersimpan dengan aman di persistent disk Railway.</p>
-            </div>
-        </div>
-        
-        <script>
-            let chart;
-            async function register() {
-                const user = document.getElementById('regUser').value;
-                if(!user) return alert('Masukkan username');
-                const res = await fetch('/register', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({username: user})
-                });
-                const data = await res.json();
-                document.getElementById('regResult').innerHTML = '<pre>' + JSON.stringify(data, null, 2) + '</pre>';
-            }
-            
-            async function loadHarga() {
-                const res = await fetch('/harga');
-                const data = await res.json();
-                document.getElementById('hargaValue').innerHTML = 'Rp ' + data.harga_saat_ini.toLocaleString();
-                document.getElementById('lastUpdate').innerHTML = new Date(data.last_update).toLocaleTimeString();
-                
-                const labels = data.riwayat_harga.map(h => new Date(h.waktu).toLocaleTimeString());
-                const prices = data.riwayat_harga.map(h => h.harga);
-                
-                if (chart) chart.destroy();
-                const ctx = document.getElementById('hargaChart').getContext('2d');
-                chart = new Chart(ctx, {
-                    type: 'line',
-                    data: {
-                        labels: labels,
-                        datasets: [{
-                            label: 'Harga per Unit (Rp)',
-                            data: prices,
-                            borderColor: '#667eea',
-                            backgroundColor: 'rgba(102, 126, 234, 0.1)',
-                            tension: 0.4,
-                            fill: true
-                        }]
-                    }
-                });
-            }
-            
-            async function beli() {
-                const user = document.getElementById('buyUser').value;
-                const jumlah = parseFloat(document.getElementById('buyJumlah').value);
-                const res = await fetch('/beli', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({username: user, jumlah_unit: jumlah})
-                });
-                const data = await res.json();
-                document.getElementById('buyResult').innerHTML = '<pre>' + JSON.stringify(data, null, 2) + '</pre>';
-                loadHarga();
-            }
-            
-            async function jual() {
-                const user = document.getElementById('sellUser').value;
-                const jumlah = parseFloat(document.getElementById('sellJumlah').value);
-                const res = await fetch('/jual', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({username: user, jumlah_unit: jumlah})
-                });
-                const data = await res.json();
-                document.getElementById('sellResult').innerHTML = '<pre>' + JSON.stringify(data, null, 2) + '</pre>';
-                loadHarga();
-            }
-            
-            async function lihatPortofolio() {
-                const user = document.getElementById('portUser').value;
-                const res = await fetch('/portofolio/' + user);
-                const data = await res.json();
-                document.getElementById('portResult').innerHTML = '<pre>' + JSON.stringify(data, null, 2) + '</pre>';
-            }
-            loadHarga();
-            setInterval(loadHarga, 10000);
-        </script>
-    </body>
-    </html>
-    """
+    return "<h1>API Server Aktif</h1><p>Gunakan file index.html eksternal kamu untuk mengakses UI grafis.</p>"
