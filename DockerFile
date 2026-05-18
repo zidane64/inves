@@ -2,15 +2,13 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Copy semua file
+# Copy requirements dan install
 COPY requirements.txt .
-COPY *.py .
+RUN pip install --no-cache-dir fastapi==0.104.1 uvicorn==0.24.0 pydantic==2.5.0
 
-# Install dependencies dengan verbose (biar keliatan prosesnya)
-RUN pip install --no-cache-dir --verbose -r requirements.txt
+# Copy semua file Python
+COPY main.py .
 
-# Cek uvicorn terinstall
-RUN python -c "import uvicorn; print('uvicorn version:', uvicorn.__version__)"
+EXPOSE 8000
 
-# Jalankan
-CMD python -m uvicorn main:app --host 0.0.0.0 --port $PORT
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
