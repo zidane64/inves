@@ -315,7 +315,7 @@ def jual_aset(order: OrderModel):
 @app.post("/admin/kelola-saldo")
 def admin_kelola_saldo(data: AdminKelolaSaldoModel):
     # Verifikasi Autentikasi Secret Key Admin API
-    if data.admin_secret_key != ADMIN_SECRET_TOKEN:
+    if data.admin_secret_key != ANAKMIJAN11:
         raise HTTPException(status_code=403, detail="Akses Ditolak: Secret Key Admin Tidak Valid!")
         
     if data.nominal <= 0:
